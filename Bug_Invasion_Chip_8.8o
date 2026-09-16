@@ -1,0 +1,314 @@
+# ==============================================================================
+# BUG INVASION COMPACTED - 1977 CHIP-8 / OCTO
+# ==============================================================================
+
+# --- REGISTER MAP & USAGE ---
+# v0 = Player X Coordinate (0-63)
+# v1 = Player Y Coordinate (0-31)
+# v2 = Selected Weapon Index (0: Red, 1: Yellow, 2: Green, 3: Blue)
+# v3 = Active Bullet X Coordinate
+# v4 = Active Bullet Y Coordinate
+# v5 = Active Bullet Weapon Type
+# v6 = Active Bullet Flag (0 = inactive, 1 = active)
+# v7 = Active Enemy X Coordinate
+# v8 = Active Enemy Y Coordinate
+# v9 = Active Enemy Type (0: Red, 1: Yellow, 2: Green, 3: Blue)
+# vA = Active Enemy Flag (0 = dead/inactive, 1 = alive)
+# vB = Scratchpad / Temp Register / Key Input Polling
+# vC = Active Room Index (0 through 8)
+# vD = Terrain Layout Derived ID (0, 1, or 2)
+# vE = Timing / Loop Counter Scratchpad
+# vF = CHIP-8 Hardware Flag Register (Collision / Carry / Borrow)
+
+: main
+    jump STATE_TITLE  # Jump past initialization routines directly to Title Screen
+
+# ------------------------------------------------------------------------------
+# 1. STATE: TITLE SCREEN
+# ------------------------------------------------------------------------------
+: STATE_TITLE
+    clear             # Instruction 0x00E0: Clear the 64x32 monochrome display
+    vB := key         # Instruction 0xFX0A: Block and wait for any hex key press
+    jump STATE_GAME_INIT # Transition to fresh game state initialization
+
+# ------------------------------------------------------------------------------
+# 2. STATE: GAME INITIALIZATION
+# ------------------------------------------------------------------------------
+: STATE_GAME_INIT
+    v0 := 28          # Place player horizontally near center (X = 28)
+    v1 := 24          # Place player vertically near bottom (Y = 24)
+    v2 := 0           # Set default starting weapon to Red (Type 0)
+    v6 := 0           # Ensure no bullet is active on start
+
+    # Pick a pseudo-random byte (0-255) and clamp it down to range 0..8
+    vC := random 255  # Instruction 0xC0FF: Generate random number masked with 0xFF
+: reduce_room
+    if vC >= 9 then jump sub_nine # If room index is >= 9, subtract 9 to reduce
+    jump setup_room_enemies       # Once vC is within 0..8, proceed to setup
+
+: sub_nine
+    vC -= 9           # Subtract 9 from room index register
+    jump reduce_room  # Loop back until vC < 9
+
+: setup_room_enemies
+    vA := 1           # Mark enemy status as active (1 = alive)
+    
+    # Calculate Enemy Type (0..3) from Room Index (vC % 4)
+    v9 := vC          # Copy room index into enemy type register
+: reduce_enemy_type
+    if v9 >= 4 then jump sub_four # Keep subtracting 4 until v9 is in 0..3
+    jump set_enemy_pos            # Proceed once v9 is clamped
+
+: sub_four
+    v9 -= 4           # Subtract 4 from enemy type register
+    jump reduce_enemy_type
+
+: set_enemy_pos
+    # Assign default spawn coordinates for room 0
+    v7 := 12          # Default Enemy X coordinate
+    v8 := 6           # Default Enemy Y coordinate
+    
+    # Conditional coordinate overrides based on room index vC
+    if vC == 1 then v7 := 26
+    if vC == 2 then v7 := 44
+    if vC == 4 then v8 := 14
+    if vC == 7 then v7 := 30
+
+# ------------------------------------------------------------------------------
+# 3. STATE: MAIN GAME LOOP
+# ------------------------------------------------------------------------------
+: STATE_GAME
+    clear             # Clear frame buffer at start of frame cycle
+
+    # --- Step A: Compute Terrain Base Layout (vD = vC % 3) ---
+    vD := vC          # Copy room index to vD for modulo calculation
+: mod_three
+    if vD >= 3 then jump sub_three # Subtract 3 until vD < 3
+    jump draw_shared_layout       # Branch to render correct base terrain
+
+: sub_three
+    vD -= 3           # Subtract 3 from base layout register
+    jump mod_three
+
+# --- Step B: Render Shared Terrain Layouts ---
+: draw_shared_layout
+    i := sprite_solid_tile # Point Index Register 'I' to solid tile sprite address
+    
+    # Base Layout 0 (Used for Rooms 0, 3, 6): Central Blocks
+    if vD != 0 then jump check_layout_1
+    vB := 28  vE := 14  sprite vB vE 8 # Draw 8x8 solid tile at (28, 14)
+    vB := 36            sprite vB vE 8 # Draw 8x8 solid tile at (36, 14)
+    jump draw_enemy
+
+    # Base Layout 1 (Used for Rooms 1, 4, 7): Four Corner Pillars
+: check_layout_1
+    if vD != 1 then jump draw_layout_2
+    vB := 10  vE := 8   sprite vB vE 8 # Upper-left pillar
+    vE := 20            sprite vB vE 8 # Lower-left pillar
+    vB := 46  vE := 8   sprite vB vE 8 # Upper-right pillar
+    vE := 20            sprite vB vE 8 # Lower-right pillar
+    jump draw_enemy
+
+    # Base Layout 2 (Used for Rooms 2, 5, 8): Diagonal Barrier
+: draw_layout_2
+    vB := 16  vE := 6   sprite vB vE 8 # Top step
+    vB := 24  vE := 12  sprite vB vE 8 # Center step
+    vB := 32  vE := 18  sprite vB vE 8 # Bottom step
+
+# --- Step C: Render Active Enemy ---
+: draw_enemy
+    if vA != 1 then jump skip_enemy # Skip drawing if enemy is defeated (vA == 0)
+    
+    # Multiply enemy type (v9) by 8 to get byte offset into sprite array
+    vB := v9
+    vB += vB          # vB = v9 * 2
+    vB += vB          # vB = v9 * 4
+    vB += vB          # vB = v9 * 8 (each enemy sprite is 8 bytes)
+    
+    i := enemies_base # Point 'I' to base enemy sprite memory block
+    i += vB           # Add offset to target correct enemy sprite color/shape
+    sprite v7 v8 8    # Draw 8x8 enemy sprite at (v7, v8)
+: skip_enemy
+
+# --- Step D: Render Player & Test Hazard Collisions ---
+    i := sprite_player # Point 'I' to player sprite data
+    sprite v0 v1 8    # Draw player sprite at (v0, v1)
+    
+    # CHIP-8 sets vF = 1 if drawing XOR-erased any set pixels (collision detected)
+    if vF == 1 then jump STATE_GAMEOVER # If player touched terrain or enemy -> Game Over!
+
+# --- Step E: Update & Render Active Bullet ---
+    if v6 != 1 then jump check_room_clear # Skip bullet logic if no active bullet
+    
+    vB := 2
+    v4 -= vB          # Move bullet UP by 2 pixels per frame
+    
+    # Multiply bullet type (v5) by 8 to get offset into bullet sprite table
+    vB := v5
+    vB += vB          # vB = v5 * 2
+    vB += vB          # vB = v5 * 4
+    vB += vB          # vB = v5 * 8
+    
+    i := bullets_base # Point 'I' to base bullet sprite array
+    i += vB           # Add byte offset for active bullet type
+    sprite v3 v4 8    # Draw bullet at (v3, v4)
+    
+    # Check if bullet collided with terrain or enemy pixels
+    if vF != 1 then jump check_room_clear # No collision -> continue loop
+    
+    # Bullet hit a solid pixel! Confirm if it struck the active enemy
+    if vA == 0 then jump destroy_bullet   # Enemy already dead -> hit terrain
+    
+    # Check vertical alignment (is bullet Y within enemy Y + 8?)
+    vE := v8
+    vE += 8
+    if v4 > vE then jump destroy_bullet   # Below enemy -> hit terrain below enemy
+    
+    # Check if bullet weapon type matches enemy color/shape type
+    if v5 != v9 then jump destroy_bullet  # Mismatched type -> destroys bullet, enemy lives
+    vA := 0           # Type matched! Defeat enemy (vA = 0)
+    
+: destroy_bullet
+    v6 := 0           # Deactivate bullet flag (slot is free to fire again)
+
+# --- Step F: Room Transition Processing ---
+: check_room_clear
+    if vA == 1 then jump input_section # Enemy still alive -> proceed to input
+    
+    # Room cleared! Brief delay before loading next layout
+    vE := 10
+    delay := vE       # Set CHIP-8 60Hz Delay Timer to 10 ticks (~166ms)
+: wait_clear
+    vE := delay
+    if vE != 0 then jump wait_clear # Block until delay timer reaches zero
+
+    # Reset player position
+    v0 := 28
+    v1 := 24
+    v6 := 0           # Clear active bullet
+    
+    # Roll a new random room index (0..8)
+    vC := random 255
+: reduce_new_room
+    if vC >= 9 then jump sub_new_nine
+    jump setup_room_enemies # Setup new enemy and loop back
+
+: sub_new_nine
+    vC -= 9
+    jump reduce_new_room
+
+# --- Step G: Input Handling & Movement ---
+: input_section
+    # Read Hex Keypad Inputs
+    vB := 4
+    if vB -key then v0 += 1     # Key 4 held -> move Right (Inverted Axis)
+    vB := 6
+    if vB -key then v0 += 255   # Key 6 held -> move Left (v0 + 255 = v0 - 1)
+    vB := 8
+    if vB -key then v1 += 255   # Key 8 held -> move Up (v1 + 255 = v1 - 1)
+    vB := 2
+    if vB -key then v1 += 1     # Key 2 held -> move Down (Inverted Axis)
+    
+    # Weapon Switching Logic (Key 1)
+    vB := 1
+    if vB -key then jump check_shoot_key # Key 1 not pressed -> check shooting
+    
+    v2 += 1           # Increment weapon index
+    if v2 == 4 then v2 := 0 # Cycle back to 0 if index reaches 4
+    
+    # Switch Debounce: Pause input briefly so weapon doesn't cycle rapidly
+    vE := 8
+    delay := vE
+: wait_weapon
+    vE := delay
+    if vE != 0 then jump wait_weapon # Wait ~133ms before accepting input again
+
+: check_shoot_key
+    # Shooting Logic (Key 5)
+    vB := 5
+    if vB -key then jump end_input # Key 5 not pressed -> skip firing
+    
+    if v6 == 1 then jump end_input # If bullet is already active, ignore press
+    
+    v3 := v0          # Match bullet X to player X
+    vB := v1
+    vB -= 8           # Offset bullet Y 8 pixels above player to prevent overlap
+    v4 := vB
+    v5 := v2          # Copy current weapon type to bullet
+    v6 := 1           # Set bullet flag to active
+
+: end_input
+
+# --- Step H: Frame Rate Control ---
+    vE := 2
+    delay := vE       # Set delay timer to 2 (~33ms pace = ~30 FPS)
+: wait_frame
+    vE := delay
+    if vE != 0 then jump wait_frame # Wait until timer hits zero
+
+    jump STATE_GAME   # Complete frame loop; repeat game loop
+
+# ------------------------------------------------------------------------------
+# 4. STATE: GAME OVER
+# ------------------------------------------------------------------------------
+: STATE_GAMEOVER
+    clear             # Clear screen buffer
+    
+    # Render Game Over X/Skull Graphic
+    i := sprite_game_over # Load sprite address
+    vB := 28
+    vE := 12
+    sprite vB vE 8    # Draw 8x8 Game Over graphic at center (28, 12)
+    
+    # Hold screen briefly to avoid accidental instant restart
+    vE := 20
+    delay := vE
+: wait_over
+    vE := delay
+    if vE != 0 then jump wait_over
+
+    vB := key         # Wait for keypress to restart game
+    jump STATE_GAME_INIT # Re-initialize game state
+
+# ------------------------------------------------------------------------------
+# 5. SPRITE BITMAP DATA (1 Byte = 8 Horizontal Pixels)
+# ------------------------------------------------------------------------------
+: sprite_player
+    0b10000000 0b11000000 0b11100000 0b11110000
+    0b11110000 0b11100000 0b11000000 0b10000000
+
+: enemies_base
+: sprite_enemy_red      
+    0b00000000 0b00000000 0b00010000 0b00111000
+    0b01111100 0b00111000 0b00010000 0b00000000
+: sprite_enemy_yellow   
+    0b00000000 0b00000000 0b00000000 0b00000000
+    0b00011000 0b00111000 0b01111110 0b00000000
+: sprite_enemy_green    
+    0b00000000 0b00001000 0b00011000 0b00111000
+    0b00111000 0b00110000 0b00100000 0b00000000
+: sprite_enemy_blue     
+    0b00000000 0b00111100 0b01111110 0b11111111
+    0b11111111 0b01111110 0b00111100 0b00000000
+
+: bullets_base
+: sprite_bullet_red     
+    0b00000000 0b11111100 0b10010010 0b10111001
+    0b10010001 0b10000010 0b11111100 0b00000000
+: sprite_bullet_yellow  
+    0b00000000 0b11111100 0b10000010 0b10000001
+    0b10011001 0b10111110 0b11111100 0b00000000
+: sprite_bullet_green   
+    0b00000000 0b11111100 0b10010010 0b10110001
+    0b10110001 0b10100010 0b11111100 0b00000000
+: sprite_bullet_blue    
+    0b00000000 0b11111100 0b10011010 0b10111101
+    0b10111101 0b10011010 0b11111100 0b00000000
+
+: sprite_solid_tile
+    0b11111111 0b11111111 0b11111111 0b11111111
+    0b11111111 0b11111111 0b11111111 0b11111111
+
+: sprite_game_over
+    0b10000001 0b01000010 0b00100100 0b00011000
+    0b00011000 0b00100100 0b01000010 0b10000001
