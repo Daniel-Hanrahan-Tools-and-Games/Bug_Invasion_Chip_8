@@ -2,6 +2,9 @@
 Chip 8 version of Bug_Invasion.
 
 
+The game is almost the same as original with the only differences from the original is that the game is Bezerk like instead of River Raid like, the colors were changed into shapes and enemies do not move.
+
+
 The game is written in octo.
 
 
