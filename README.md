@@ -14,7 +14,7 @@ You need to run .ch8 file in Chip 8 Emulator/Interpreter
 <p>Copyright (C) 2026 Daniel Hanrahan Tools and Games SPDX-License-Identifier: GPL-3.0-or-later A copy of the GNU General Public License is included in the file COPYING; if not, see<https://www.gnu.org/licenses/>. Information just about the stuff in this software not covered by the GNU General Public License version 3: This work is licensed under Attribution-ShareAlike 4.0 International</p>
 
 
-<h3>Both of these links take you to Superhero_Tournament</h3>
+<h3>Both of these links take you to Bug_Invasion</h3>
 
 <a href="https://github.com/Daniel-Hanrahan-Tools-and-Games/Bug_Invasion">Bug_Invasion Repository Page</a>
 
